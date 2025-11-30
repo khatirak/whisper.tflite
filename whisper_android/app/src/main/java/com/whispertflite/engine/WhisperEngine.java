@@ -156,8 +156,16 @@ public class WhisperEngine implements IWhisperEngine {
             // Get word for token and Skip additional token
             if (token < mWhisperUtil.getTokenEOT()) {
                 String word = mWhisperUtil.getWordFromToken(token);
-                Log.d(TAG, "Adding token: " + token + ", word: " + word);
-                result.append(word);
+                // Filter out special tokens that might have been added
+                if (word != null && !word.startsWith("[_extra_token_") && 
+                    !word.startsWith("[_TT_") && !word.startsWith("[_EOT_") && 
+                    !word.startsWith("[_SOT_") && !word.startsWith("[_PREV_") && 
+                    !word.startsWith("[_NOT_") && !word.startsWith("[_BEG_")) {
+                    Log.d(TAG, "Adding token: " + token + ", word: " + word);
+                    result.append(word);
+                } else {
+                    Log.d(TAG, "Skipping special token: " + token + ", word: " + word);
+                }
             } else {
                 if (token == mWhisperUtil.getTokenTranscribe())
                     Log.d(TAG, "It is Transcription...");

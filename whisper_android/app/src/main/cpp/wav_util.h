@@ -44,8 +44,7 @@ std::vector<float> readWAVFile(const char* filename) {
         return std::vector<float>();
     }
 
-
-   // Determine the audio format
+    // Determine the audio format
     std::string audio_format_str;
     switch (wav_header.audio_format) {
         case 1:
@@ -54,7 +53,6 @@ std::vector<float> readWAVFile(const char* filename) {
         case 3:
             audio_format_str = "IEEE Float";
             break;
-        // Add more cases for other audio formats as needed
         default:
             audio_format_str = "Unknown";
             break;
@@ -66,28 +64,118 @@ std::vector<float> readWAVFile(const char* filename) {
     std::cout << "Sample Rate: " << wav_header.sample_rate << std::endl;
     std::cout << "Bits Per Sample: " << wav_header.bits_per_sample << std::endl;
 
+    // Skip any extra bytes in fmt chunk if fmt_chunk_size > 16
+    if (wav_header.fmt_chunk_size > 16) {
+        wav_file.seekg(wav_header.fmt_chunk_size - 16, std::ios::cur);
+    }
+
+    // Find the "data" chunk
+    char chunk_id[4];
+    uint32_t chunk_size;
+    bool found_data = false;
+    
+    while (wav_file.read(reinterpret_cast<char*>(chunk_id), 4)) {
+        wav_file.read(reinterpret_cast<char*>(&chunk_size), 4);
+        
+        if (strncmp(chunk_id, "data", 4) == 0) {
+            found_data = true;
+            break;
+        } else {
+            // Skip this chunk
+            wav_file.seekg(chunk_size, std::ios::cur);
+        }
+    }
+
+    if (!found_data) {
+        std::cerr << "Data chunk not found in WAV file" << std::endl;
+        wav_file.close();
+        return std::vector<float>();
+    }
+
     // Calculate the number of samples
-    uint32_t num_samples = wav_header.wav_size / wav_header.block_align;
+    uint32_t bytes_per_sample = wav_header.bits_per_sample / 8;
+    uint32_t num_samples_total = chunk_size / bytes_per_sample;
+    uint32_t num_samples_per_channel = num_samples_total / wav_header.num_channels;
 
-	// convert pcm 16 to float
-	std::vector<float> float_samples(num_samples);
-	if (wav_header.audio_format == 1) {
-		// Read audio samples into a vector of int16_t
-		std::vector<int16_t> pcm16_samples(num_samples);
-		wav_file.read(reinterpret_cast<char*>(pcm16_samples.data()), wav_header.wav_size);
+    std::vector<float> float_samples;
 
-		// Convert int16_t samples to float samples
-		for (uint32_t i = 0; i < num_samples; i++) {
-			float_samples[i] = static_cast<float>(pcm16_samples[i]) / static_cast<float>(INT16_MAX);
-		}
-	} else {
-		// Read audio samples into a vector of float
-		wav_file.read(reinterpret_cast<char*>(float_samples.data()), wav_header.wav_size);
-	}
+    if (wav_header.audio_format == 1) { // PCM
+        if (wav_header.bits_per_sample == 16) {
+            std::vector<int16_t> pcm16_samples(num_samples_total);
+            wav_file.read(reinterpret_cast<char*>(pcm16_samples.data()), chunk_size);
+
+            // Convert to float and handle mono/stereo
+            if (wav_header.num_channels == 1) {
+                // Mono: direct conversion
+                float_samples.resize(num_samples_per_channel);
+                for (uint32_t i = 0; i < num_samples_per_channel; i++) {
+                    float_samples[i] = static_cast<float>(pcm16_samples[i]) / 32768.0f;
+                }
+            } else {
+                // Stereo or multi-channel: convert to mono by averaging
+                float_samples.resize(num_samples_per_channel);
+                for (uint32_t i = 0; i < num_samples_per_channel; i++) {
+                    float sum = 0.0f;
+                    for (uint16_t ch = 0; ch < wav_header.num_channels; ch++) {
+                        sum += static_cast<float>(pcm16_samples[i * wav_header.num_channels + ch]);
+                    }
+                    float_samples[i] = (sum / wav_header.num_channels) / 32768.0f;
+                }
+            }
+        } else {
+            std::cerr << "Unsupported bits per sample: " << wav_header.bits_per_sample << std::endl;
+            wav_file.close();
+            return std::vector<float>();
+        }
+    } else if (wav_header.audio_format == 3) { // IEEE Float
+        std::vector<float> float_samples_raw(num_samples_total);
+        wav_file.read(reinterpret_cast<char*>(float_samples_raw.data()), chunk_size);
+
+        // Handle mono/stereo
+        if (wav_header.num_channels == 1) {
+            float_samples = float_samples_raw;
+        } else {
+            // Convert to mono by averaging
+            float_samples.resize(num_samples_per_channel);
+            for (uint32_t i = 0; i < num_samples_per_channel; i++) {
+                float sum = 0.0f;
+                for (uint16_t ch = 0; ch < wav_header.num_channels; ch++) {
+                    sum += float_samples_raw[i * wav_header.num_channels + ch];
+                }
+                float_samples[i] = sum / wav_header.num_channels;
+            }
+        }
+    } else {
+        std::cerr << "Unsupported audio format: " << wav_header.audio_format << std::endl;
+        wav_file.close();
+        return std::vector<float>();
+    }
+
+    // Resample to 16kHz if needed (simple linear interpolation)
+    if (wav_header.sample_rate != 16000) {
+        std::vector<float> resampled;
+        float ratio = static_cast<float>(wav_header.sample_rate) / 16000.0f;
+        uint32_t new_size = static_cast<uint32_t>(float_samples.size() / ratio);
+        resampled.resize(new_size);
+        
+        for (uint32_t i = 0; i < new_size; i++) {
+            float src_index = i * ratio;
+            uint32_t src_idx = static_cast<uint32_t>(src_index);
+            float frac = src_index - src_idx;
+            
+            if (src_idx + 1 < float_samples.size()) {
+                resampled[i] = float_samples[src_idx] * (1.0f - frac) + float_samples[src_idx + 1] * frac;
+            } else {
+                resampled[i] = float_samples[src_idx];
+            }
+        }
+        float_samples = resampled;
+        std::cout << "Resampled from " << wav_header.sample_rate << " Hz to 16000 Hz" << std::endl;
+    }
 
     // Close the file
     wav_file.close();
 
-    // Return the float_samples vector
+    std::cout << "Read " << float_samples.size() << " samples" << std::endl;
     return float_samples;
 }

@@ -208,23 +208,71 @@ std::string TFLiteEngine::transcribeBuffer(std::vector<float> samples) {
 
     int *output_int = g_whisper_tflite.interpreter->typed_output_tensor<int>(0);
     std::string text = "";
+    
+    std::cout << "Output size: " << output_size << std::endl;
+    std::cout << "First 20 tokens: ";
+    for (int i = 0; i < std::min(20, output_size); i++) {
+        std::cout << output_int[i] << " ";
+    }
+    std::cout << std::endl;
 
     for (int i = 0; i < output_size; i++) {
-        if (output_int[i] == g_vocab.token_eot) {
+        int token = output_int[i];
+        
+        // Stop at EOT token
+        if (token == g_vocab.token_eot) {
+            std::cout << "Found EOT token at position " << i << std::endl;
             break;
         }
         
-        if (output_int[i] < g_vocab.token_eot) {
-            text += whisper_token_to_str(output_int[i]);
+        // Skip special tokens
+        if (token == g_vocab.token_sot || token == g_vocab.token_prev || 
+            token == g_vocab.token_not || token == g_vocab.token_beg ||
+            token == g_vocab.token_solm) {
+            continue;
+        }
+        
+        // Only process valid vocabulary tokens
+        if (token >= 0) {
+            auto it = g_vocab.id_to_token.find(token);
+            if (it != g_vocab.id_to_token.end()) {
+                const char* token_str = it->second.c_str();
+                if (token_str != nullptr && strlen(token_str) > 0) {
+                    text += token_str;
+                    std::cout << "Token " << i << ": " << token << " -> \"" << token_str << "\"" << std::endl;
+                }
+            } else {
+                std::cout << "Token " << i << ": " << token << " not found in vocabulary" << std::endl;
+            }
         }
     }
-
+    
+    std::cout << "Final transcription: \"" << text << "\"" << std::endl;
     return text;
 }
 
 std::string TFLiteEngine::transcribeFile(const char *waveFile) {
 	std::vector<float> pcmf32 = readWAVFile(waveFile);
-    pcmf32.resize((WHISPER_SAMPLE_RATE * WHISPER_CHUNK_SIZE), 0);
+    
+    if (pcmf32.empty()) {
+        std::cerr << "Failed to read WAV file or file is empty" << std::endl;
+        return "";
+    }
+    
+    // Ensure we have at least 30 seconds of audio (pad with zeros if shorter)
+    // If longer, take the first 30 seconds
+    size_t target_size = WHISPER_SAMPLE_RATE * WHISPER_CHUNK_SIZE;
+    if (pcmf32.size() < target_size) {
+        pcmf32.resize(target_size, 0.0f);
+        std::cout << "Audio is shorter than 30 seconds, padded with zeros" << std::endl;
+    } else if (pcmf32.size() > target_size) {
+        pcmf32.resize(target_size);
+        std::cout << "Audio is longer than 30 seconds, using first 30 seconds" << std::endl;
+    }
+    
+    std::cout << "Processing " << pcmf32.size() << " samples (" 
+              << (pcmf32.size() / WHISPER_SAMPLE_RATE) << " seconds)" << std::endl;
+    
     std::string text = transcribeBuffer(pcmf32);
     return text;
 }

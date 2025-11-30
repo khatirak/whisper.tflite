@@ -92,7 +92,11 @@ void print(const std::vector<float>& a) {
 
 // Convert a token to a string
 const char* whisper_token_to_str(int token) {
-    return g_vocab.id_to_token.at(token).c_str();
+    auto it = g_vocab.id_to_token.find(token);
+    if (it != g_vocab.id_to_token.end()) {
+        return it->second.c_str();
+    }
+    return "";
 }
 
 // Naive Discrete Fourier Transform
